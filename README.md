@@ -134,6 +134,22 @@ npm run pack
 `powershell -ExecutionPolicy Bypass -File test\manual\mem-report.ps1`
 （逐个进程列出工作集/私有内存并求和）。
 
+### 第二轮：泄漏 / 常驻对象 / 资源未释放专项
+
+第一轮砍掉的是"大头常驻"；这一轮清理的是**随时间累积或随内容变大**的部分。
+共 8 处，全部不改变业务行为（`node test/store.test.js` 15 项全过）：
+
+| # | 位置 | 问题 | 修法 |
+| --- | --- | --- | --- |
+| 1 | `store.js` | 热路径 SQL 每次调用都 `db.prepare()`，原生语句句柄在两次 GC 之间持续累积（每次抓取提交都走 `enforceLimits`/`_nextStamp`） | 固定 SQL 构造期一次 prepare 长期复用；`list()` 动态 SQL 按形态缓存（键空间有界）；导入不再逐行 prepare `last_insert_rowid` |
+| 2 | `store.js` | `list()` 每次把**全库** `item_tags` 连接表读出来建 Map，随历史无界增长 | 只按当前页条目 id 查标签（语句按页长缓存） |
+| 3 | `capture.js` | 上一段剪贴板文本**整段常驻**主进程：复制大文档后一直扣着数 MB 字符串（UTF-16 再翻倍） | 只存 SHA1 指纹，判重语义与原字符串比对一致 |
+| 4 | `capture.js` | 超限大图仍被**整块读入内存**、算完哈希才丢弃：30MB 截图挂在剪贴板上时约每 5.6s 重复分配一次 | `blob.size` 预判，超限内容零读取；警告与降频节奏保持不变 |
+| 5 | `renderer/app.js` | 面板隐藏期间每条新剪贴板都会把 300 条数据 + DOM 重新塞回**隐藏窗口**，把 `onHidden` 的清理反复撤销 | 按 `document.visibilityState` 守卫；唤出时 `onShown` 本来就全量刷新 |
+| 6 | `renderer/app.js` | 面板打开期间 `state.items` 扣着最多 300 条**整段原文** | 数据落地即裁剪为「折叠后 600 字符 + 是否含换行」，渲染结果逐字符一致 |
+| 7 | `main.js` / `tray.js` | 退出时托盘从不销毁（通知区幽灵图标 + 图标位图/菜单句柄不释放）、空闲销毁与焦点夺回定时器不清理 | `will-quit` 里销毁托盘（先摘事件回调）、清掉两个定时器 |
+| 8 | `main.js` | 旧窗口迟到的 `closed` 事件会把**刚重建的新窗口**引用置空：活着的渲染进程失去句柄，再也无法隐藏/销毁（窗口泄漏）；首帧就绪的 2 秒兜底定时器用完不清 | `closed` 回调按窗口实例判等；就绪后立即 `clearTimeout` 兜底定时器 |
+
 ## 目录结构
 
 ```

@@ -147,7 +147,8 @@ function createCapture({ store, onCaptured }) {
   let timer = null;
   let busy = false;
   let tickCount = 0;
-  let lastText = null;
+  let lastTextHash = null; // 只存 SHA1 指纹：旧实现把整段剪贴板文本扣在主进程里，
+  // 复制过大文档（可达数 MB，UTF-16 再翻倍）后会一直常驻到剪贴板变成别的内容
   let lastFilesKey = null;
   let lastImageHash = null;
   let imageIdleTicks = 0;
@@ -197,7 +198,7 @@ function createCapture({ store, onCaptured }) {
       const key = hashBuffer(Buffer.from(files.join('\0'), 'utf8'), 'f:paths');
       if (key !== lastFilesKey && !selfWrites.has(key)) {
         lastFilesKey = key;
-        lastText = null;
+        lastTextHash = null;
         lastImageHash = null;
         commit({
           kind: 'files',
@@ -220,10 +221,13 @@ function createCapture({ store, onCaptured }) {
       text = '';
     }
     if (text && text.length) {
-      if (text !== lastText) {
-        lastText = text;
+      // 指纹相同视为内容未变：与原字符串全等比对的判重语义一致（SHA1 碰撞可忽略）。
+      // 大文本常驻剪贴板时每轮多一次哈希（sha1 ~GB/s，5MB 约 5ms），换掉的是
+      // 主进程里长期扣着的整段大字符串。
+      const hash = hashText(text);
+      if (hash !== lastTextHash) {
+        lastTextHash = hash;
         lastImageHash = null;
-        const hash = hashText(text);
         if (!selfWrites.has(hash)) {
           commit({
             kind: 'text',
@@ -236,7 +240,7 @@ function createCapture({ store, onCaptured }) {
       }
       return;
     }
-    lastText = null;
+    lastTextHash = null;
 
     // 3) 图片
     if (imageIdleTicks >= IMAGE_SLOWDOWN_AFTER && tickCount % IMAGE_SLOWDOWN_FACTOR !== 0) return;

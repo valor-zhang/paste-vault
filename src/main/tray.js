@@ -63,7 +63,15 @@ function createTray({
   tray.on('double-click', onToggle);
   rebuild();
 
-  return { tray, rebuild, destroy: () => tray.destroy() };
+  return {
+    tray,
+    rebuild,
+    destroy() {
+      // 先摘掉事件回调（它们持有外层闭包的引用），再销毁托盘本体
+      tray.removeAllListeners();
+      tray.destroy();
+    }
+  };
 }
 
 module.exports = { createTray };

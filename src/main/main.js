@@ -806,6 +806,20 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  // 资源释放：托盘不显式销毁的话，它的原生资源（图标位图、菜单句柄）
+  // 会一直被 Tray 实例持有，Windows 通知区域还可能留下幽灵图标
+  if (trayCtl) {
+    try {
+      trayCtl.destroy();
+    } catch {}
+    trayCtl = null;
+  }
+  // 清掉可能还挂着的定时器：浮层空闲销毁定时器、焦点夺回轮询
+  cancelOverlayIdleDestroy();
+  if (focusClaimTimer) {
+    clearInterval(focusClaimTimer);
+    focusClaimTimer = null;
+  }
   if (store) {
     try {
       store.close();

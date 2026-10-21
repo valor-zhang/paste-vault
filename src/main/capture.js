@@ -85,8 +85,14 @@ async function readFileListFrom(items) {
   return [];
 }
 
-/** 图片：优先 image/png，退回任意 image/* */
-async function readImageFrom(items) {
+/**
+ * 图片：优先 image/png，退回任意 image/*。
+ * 传入 maxBytes 时先用 blob.size 预判：超限的内容不再整块读入内存。
+ * 旧实现会把超限大图整个拉进 Buffer、算完哈希再丢弃 —— 一张 30MB 截图
+ * 挂在剪贴板上时，主进程每隔几秒（降频后）就要重复分配 30MB。
+ * 返回 { type, buf } = 正常图片；{ type, oversize } = 超限；null = 没有图片。
+ */
+async function readImageFrom(items, maxBytes) {
   const rank = (t) => (t === 'image/png' ? 0 : 1);
   const candidates = [];
   for (const item of items) {
@@ -97,7 +103,15 @@ async function readImageFrom(items) {
   candidates.sort((a, b) => rank(a.type) - rank(b.type));
   for (const { item, type } of candidates) {
     try {
-      const buf = await blobBytes(item, type);
+      const blob = await item.getType(type);
+      const size = typeof blob.size === 'number' ? blob.size : -1;
+      if (size === 0) continue; // 空内容换下一个候选（与旧行为一致）
+      if (maxBytes > 0 && size > maxBytes) {
+        // 与旧实现语义一致：第一个能取到内容的候选超限，整张图就跳过，
+        // 不再继续尝试其它格式
+        return { type, oversize: size };
+      }
+      const buf = Buffer.from(await blob.arrayBuffer());
       if (buf.length) return { type, buf };
     } catch {
       /* 换下一个候选 */
@@ -151,6 +165,7 @@ function createCapture({ store, onCaptured }) {
   // 复制过大文档（可达数 MB，UTF-16 再翻倍）后会一直常驻到剪贴板变成别的内容
   let lastFilesKey = null;
   let lastImageHash = null;
+  let lastOversizeKey = null; // 超限图片的指纹（格式:大小）：超限内容不读正文，没法用内容哈希记账
   let imageIdleTicks = 0;
   const selfWrites = new Set(); // 自己写进剪贴板的内容，不再当新条目收一遍
 
@@ -245,13 +260,31 @@ function createCapture({ store, onCaptured }) {
     // 3) 图片
     if (imageIdleTicks >= IMAGE_SLOWDOWN_AFTER && tickCount % IMAGE_SLOWDOWN_FACTOR !== 0) return;
 
-    const image = await readImageFrom(items);
+    const limit = store.settings().maxImageBytes;
+    const image = await readImageFrom(items, limit);
     if (!image) {
       lastImageHash = null;
+      lastOversizeKey = null;
       imageIdleTicks = 0;
       return;
     }
 
+    if (image.oversize) {
+      // 超限图片：不读内容，用「格式:大小」指纹保持与旧实现一致的记账节奏 ——
+      // 首次发现警告一次并清零降频计数，之后无变化则累计计数、进入降频
+      lastImageHash = null;
+      const key = `${image.type}:${image.oversize}`;
+      if (key !== lastOversizeKey) {
+        lastOversizeKey = key;
+        imageIdleTicks = 0;
+        console.warn(`[capture] 图片 ${Math.round(image.oversize / 1024)}KB 超过上限 ${Math.round(limit / 1024)}KB，已跳过`);
+      } else {
+        imageIdleTicks++;
+      }
+      return;
+    }
+
+    lastOversizeKey = null;
     const hash = hashBuffer(image.buf, 'i:');
     if (hash === lastImageHash) {
       imageIdleTicks++;
@@ -260,8 +293,8 @@ function createCapture({ store, onCaptured }) {
     lastImageHash = hash;
     imageIdleTicks = 0;
 
-    const limit = store.settings().maxImageBytes;
     if (image.buf.length > limit) {
+      // 兜底：blob.size 与实际字节数理论上不会不一致，保留旧的超限检查
       console.warn(`[capture] 图片 ${Math.round(image.buf.length / 1024)}KB 超过上限 ${Math.round(limit / 1024)}KB，已跳过`);
       return;
     }

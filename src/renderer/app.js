@@ -707,7 +707,10 @@ window.api.onShown(async () => {
 });
 
 window.api.onChanged(() => {
-  if (state.view === 'list') load(true);
+  // 面板隐藏时不在后台重建列表：隐藏窗口里的 DOM 和整段条目字符串会一直扣着
+  // （onHidden 的清理会被下一次广播重新填回来）。onShown 每次唤出都全量刷新，
+  // 跳过后台重建不影响打开面板时的数据新鲜度。
+  if (state.view === 'list' && document.visibilityState !== 'hidden') load(true);
 });
 
 // 面板收起时把列表 DOM 清空：隐藏着的窗口不会自己释放解码后的图片位图，
@@ -728,6 +731,8 @@ window.api.onStatus((payload) => {
   state.paused = !!s.paused;
   statusEl.textContent = idleStatus();
   renderChips();
-  await load();
+  // 开机自启时窗口是隐藏创建的：列表不预取（首次唤出 onShown 必然会加载），
+  // 免得一份最多 300 条的数据在看不见的窗口里常驻
+  if (document.visibilityState !== 'hidden') await load();
   qEl.focus();
 })();

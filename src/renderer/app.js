@@ -54,6 +54,10 @@ let allTags = [];
 // 实际只渲染选中项附近这一段窗口。
 const RENDER_LIMIT = 60;
 
+// 渲染一行实际消费的正文字符数（见 rowHtml）。列表数据落地即裁剪到这个长度，
+// 整段原文只留在数据库里，不常驻渲染进程。
+const PREVIEW_CHARS = 600;
+
 // ---------- 工具 ----------
 
 function esc(s) {
@@ -102,6 +106,20 @@ function collapse(s) {
     .trim();
 }
 
+// 把列表条目裁剪成显示所需：一条剪贴板文本可能有几 MB（复制整份文档），
+// 旧实现原样扣在 state.items 里，面板开着期间全程常驻；而渲染只消费
+// 「collapse 后的前 PREVIEW_CHARS 字符」和「是否含换行」两件事。
+// 数据一落地就用整段原文算好这两件事，随后立刻释放原文，渲染结果不变。
+function trimForDisplay(items) {
+  for (const it of items) {
+    if (it.kind === 'text' && typeof it.text === 'string') {
+      it.multiLine = /[\r\n]/.test(it.text);
+      it.text = collapse(it.text).slice(0, PREVIEW_CHARS);
+    }
+  }
+  return items;
+}
+
 // ---------- 渲染 ----------
 
 function renderChips() {
@@ -139,8 +157,10 @@ function rowHtml(item, idx) {
     const more = names.length > 3 ? `<br>… 另有 ${names.length - 3} 个` : '';
     content = `<div class="text">${shown}${more}</div>`;
   } else {
-    content = `<div class="text${/[\r\n]/.test(item.text || '') ? '' : ' one-line'}">${mark(
-      collapse(item.text).slice(0, 600),
+    // item.text 已被 trimForDisplay 裁剪：multiLine 按整段原文算好，
+    // text 只剩 collapse 后的前 PREVIEW_CHARS 字符（collapse 幂等），显示与旧实现一致
+    content = `<div class="text${item.multiLine ? '' : ' one-line'}">${mark(
+      collapse(item.text).slice(0, PREVIEW_CHARS),
       state.q
     )}</div>`;
   }
@@ -205,7 +225,7 @@ async function load(keepIndex) {
     window.api.stats(),
     window.api.tags()
   ]);
-  state.items = items;
+  state.items = trimForDisplay(items);
   state.total = stats.total;
   allTags = tags || [];
   if (!keepIndex) state.index = 0;

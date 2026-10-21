@@ -91,8 +91,6 @@ class Store {
     this.stGet = p('SELECT * FROM items WHERE id = ?');
     this.stTogglePin = p('UPDATE items SET pinned = CASE pinned WHEN 0 THEN 1 ELSE 0 END WHERE id = ?');
     this.stDelete = p('DELETE FROM items WHERE id = ?');
-    this.stTagsOf = p(`SELECT it.item_id AS item_id, t.name AS name
-                       FROM item_tags it JOIN tags t ON t.id = it.tag_id`);
     this.stTagsForItem = p(`SELECT t.name AS name
                             FROM item_tags it JOIN tags t ON t.id = it.tag_id
                             WHERE it.item_id = ?`);
@@ -127,6 +125,8 @@ class Store {
     this.stAllBlobPaths = p('SELECT blob_path FROM items WHERE blob_path IS NOT NULL');
     // list() 的动态 SQL 缓存：形态只有「筛选类型 × 是否带搜索词」的固定几种，键空间有界
     this._listStmts = new Map();
+    // list() 按页取标签的语句缓存：键是页内行数（受 limit 上限约束，有界）
+    this._stTagsByIds = new Map();
 
     this._settings = {};
     this._loadSettings();
@@ -303,10 +303,23 @@ class Store {
     }
     const rows = stmt.all(params);
 
+    // 只查当前页条目的标签。旧实现每次 list 都把全库 item_tags 连接表读出来
+    // 建 Map，随历史增长无界变大，而真正被消费的只有本页这几百行。
     const tagMap = new Map();
-    for (const t of this.stTagsOf.all()) {
-      if (!tagMap.has(t.item_id)) tagMap.set(t.item_id, []);
-      tagMap.get(t.item_id).push(t.name);
+    if (rows.length) {
+      let st = this._stTagsByIds.get(rows.length);
+      if (!st) {
+        st = this.db.prepare(
+          `SELECT it.item_id AS item_id, t.name AS name
+           FROM item_tags it JOIN tags t ON t.id = it.tag_id
+           WHERE it.item_id IN (${rows.map(() => '?').join(', ')})`
+        );
+        this._stTagsByIds.set(rows.length, st);
+      }
+      for (const t of st.all(...rows.map((r) => r.id))) {
+        if (!tagMap.has(t.item_id)) tagMap.set(t.item_id, []);
+        tagMap.get(t.item_id).push(t.name);
+      }
     }
     return rows.map((r) => this._rowToItem(r, tagMap));
   }

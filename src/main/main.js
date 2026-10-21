@@ -141,14 +141,17 @@ function createOverlayWindow() {
   // did-finish-load 只等 DOM 就绪，稳定在 100~200ms。
   overlayReadyPromise = new Promise((resolve) => {
     let settled = false;
+    let fallbackTimer = null;
     const done = () => {
       if (settled) return;
       settled = true;
+      // 就绪后不再挂着 2 秒兜底定时器：它持有本次建窗的闭包，白白多存活 2 秒
+      if (fallbackTimer) clearTimeout(fallbackTimer);
       resolve();
     };
     overlay.webContents.once('did-finish-load', done);
     overlay.once('ready-to-show', done);
-    setTimeout(done, 2000); // 兜底
+    fallbackTimer = setTimeout(done, 2000); // 兜底
   });
 
   overlay.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
@@ -196,8 +199,16 @@ function createOverlayWindow() {
     }
   });
 
-  overlay.on('closed', () => {
-    overlay = null;
+  // 按实例守卫：空闲销毁后立刻再唤出时会马上建出新窗口；若旧窗口的 closed
+  // 事件晚于新窗口赋值到达，旧回调会把新窗口的引用置空 —— 一个活着的
+  // 渲染进程从此失去句柄，无法再隐藏/销毁，是直接的窗口泄漏。
+  // 顺带释放 overlayReadyPromise，不让陈旧的「首帧就绪」Promise 扣着已销毁窗口。
+  const win = overlay;
+  win.on('closed', () => {
+    if (overlay === win) {
+      overlay = null;
+      overlayReadyPromise = null;
+    }
   });
 }
 

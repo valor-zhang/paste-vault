@@ -1,0 +1,53 @@
+{
+  "name": "paste-manager",
+  "productName": "粘贴管理器",
+  "version": "0.1.0",
+  "private": true,
+  "description": "本地剪贴板历史管理器（Windows / Electron）",
+  "author": "local",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/store.test.js",
+    "e2e": "powershell -NoProfile -ExecutionPolicy Bypass -File test/manual/e2e-paste.ps1",
+    "pack": "electron-builder --win --x64"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3"
+  },
+  "devDependencies": {
+    "electron": "^44.4.3",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.local.pastemanager",
+    "productName": "粘贴管理器",
+    "artifactName": "paste-manager-${version}-setup.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "files": ["src/**/*", "package.json", "!**/*.map"],
+    "extraResources": [{ "from": "resources/paste-helper.exe", "to": "paste-helper.exe" }],
+    "npmRebuild": false,
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "粘贴管理器",
+      "include": "build/installer.nsh"
+    },
+    "portable": {
+      "artifactName": "paste-manager-${version}-portable.${ext}",
+      "requestExecutionLevel": "user"
+    }
+  }
+}

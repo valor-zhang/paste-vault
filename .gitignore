@@ -1,0 +1,12 @@
+node_modules/
+.npm-cache/
+.electron-cache/
+.probe/
+.smoke/
+.shots/
+.data-*/
+dist/
+out/
+*.log
+*.tmp
+test/manual/*.txt

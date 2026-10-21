@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src pmblob: data:; font-src 'self'"
+    />
+    <title>粘贴管理器</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="bar">
+        <div class="search">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="6.5" />
+            <line x1="16" y1="16" x2="21" y2="21" />
+          </svg>
+          <input
+            id="q"
+            type="text"
+            placeholder="搜索剪贴板历史…"
+            autocomplete="off"
+            autocorrect="off"
+            spellcheck="false"
+          />
+          <span id="count" class="count"></span>
+          <button id="btn-settings" class="icon-btn" title="设置（Ctrl+,）">⚙</button>
+        </div>
+        <div id="chips" class="chips"></div>
+      </header>
+
+      <main id="list" class="list"></main>
+
+      <section id="settings" class="settings hidden">
+        <div class="set-head">
+          <h2>设置</h2>
+          <button id="set-close" class="btn">返回（Esc）</button>
+        </div>
+        <div class="set-body">
+          <div class="set-row">
+            <span class="set-label">唤出热键</span>
+            <input id="set-hotkey" class="set-input" readonly placeholder="点这里，然后按下组合键" />
+          </div>
+          <p class="set-hint">
+            热键是<b>全局独占</b>的：设成 Ctrl+Shift+V 会占用浏览器/Word 里原本的「粘贴为纯文本」。
+            点输入框后直接按你想用的组合键即可录制。
+          </p>
+
+          <div class="set-row">
+            <span class="set-label">历史条数上限</span>
+            <input id="set-maxItems" class="set-input" type="number" min="20" max="20000" step="50" />
+          </div>
+          <div class="set-row">
+            <span class="set-label">图片张数上限</span>
+            <input id="set-maxImages" class="set-input" type="number" min="0" max="5000" step="10" />
+          </div>
+          <div class="set-row">
+            <span class="set-label">单张图片上限（MB）</span>
+            <input id="set-maxImageMB" class="set-input" type="number" min="1" max="200" step="1" />
+          </div>
+          <p class="set-hint">收藏 / 置顶的条目永不参与清理；图片另算张数，超出时丢最旧的非收藏。</p>
+
+          <div class="set-row">
+            <span class="set-label">自动粘贴前等待（毫秒）</span>
+            <input id="set-pasteDelay" class="set-input" type="number" min="0" max="2000" step="10" />
+          </div>
+          <p class="set-hint">粘不进去时把这个值调大一些（给原窗口回到前台留时间），通常不需要改。</p>
+
+          <label class="set-row check">
+            <input id="set-filesAsText" type="checkbox" />
+            <span>文件以纯文本路径回填（默认还原成文件列表，粘到资源管理器里是真复制文件）</span>
+          </label>
+          <label class="set-row check">
+            <input id="set-autostart" type="checkbox" />
+            <span>开机自动启动（开机后在托盘静默启动，不弹面板、不抢焦点）</span>
+          </label>
+          <p class="set-hint">
+            这两项在<b>托盘图标右键菜单</b>里也能直接改，不用先打开这个面板。
+          </p>
+
+          <div class="set-row">
+            <span class="set-label">数据目录</span>
+            <button id="set-opendir" class="btn">打开</button>
+            <code id="set-datadir" class="set-path"></code>
+          </div>
+
+          <div class="set-row">
+            <span class="set-label">备份</span>
+            <button id="set-export" class="btn">导出 JSON</button>
+            <button id="set-import" class="btn">导入 JSON</button>
+          </div>
+          <p class="set-hint">导入按内容去重，已存在的条目会跳过；跨机器导入不含图片文件本体。</p>
+
+          <p id="set-msg" class="set-msg"></p>
+        </div>
+      </section>
+
+      <div id="tagbar" class="tagbar hidden">
+        <span class="tagbar-label">标签</span>
+        <div id="taglist" class="taglist"></div>
+        <input id="taginput" class="taginput" placeholder="输入标签后回车，Esc 取消" autocomplete="off" />
+      </div>
+
+      <footer class="foot">
+        <span class="hint"><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+        <span class="hint"><kbd>Enter</kbd> 粘贴</span>
+        <span class="hint"><kbd>Tab</kbd> 换类型</span>
+        <span class="hint"><kbd>Ctrl</kbd>+<kbd>P</kbd> 收藏</span>
+        <span class="hint"><kbd>Ctrl</kbd>+<kbd>T</kbd> 标签</span>
+        <span class="hint"><kbd>Ctrl</kbd>+<kbd>Del</kbd> 删除</span>
+        <span class="grow"></span>
+        <span id="status" class="status"></span>
+      </footer>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>

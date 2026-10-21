@@ -79,9 +79,10 @@ class Store {
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA);
 
-    this._settings = {};
-    this._loadSettings();
-
+    // 内存优化：固定 SQL 全部在构造期 prepare 一次、长期复用。db.prepare() 每次
+    // 都会新建一个原生 sqlite3_stmt 句柄，其释放依赖 GC 终结器；热路径（每次抓取
+    // 提交都会走 enforceLimits/_nextStamp，每次列表/托盘重建都会走 stats/allTags）
+    // 反复 prepare 会让原生内存在两次 GC 之间持续累积。
     const p = (sql) => this.db.prepare(sql);
     this.stFindByHash = p('SELECT * FROM items WHERE hash = ?');
     this.stInsert = p(`INSERT INTO items (kind, subtype, text, hash, blob_path, bytes, meta, pinned, created_at)
@@ -100,13 +101,42 @@ class Store {
     this.stLinkTag = p('INSERT OR IGNORE INTO item_tags (item_id, tag_id) VALUES (?, ?)');
     this.stUnlinkTag = p('DELETE FROM item_tags WHERE item_id = ? AND tag_id = ?');
     this.stDropUnusedTag = p('DELETE FROM tags WHERE id = ? AND NOT EXISTS (SELECT 1 FROM item_tags WHERE tag_id = ?)');
+    this.stMaxStamp = p('SELECT COALESCE(MAX(created_at), 0) AS m FROM items');
+    this.stLoadSettings = p('SELECT key, value FROM settings');
+    this.stHasSetting = p('SELECT 1 AS x FROM settings WHERE key = ?');
+    this.stSetSetting = p(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+    );
+    this.stOverCount = p(
+      'SELECT id, blob_path FROM items WHERE pinned = 0 ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET @max'
+    );
+    this.stOverImages = p(
+      "SELECT id, blob_path FROM items WHERE pinned = 0 AND kind = 'image' ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET @max"
+    );
+    this.stBigImages = p(
+      "SELECT id, blob_path FROM items WHERE pinned = 0 AND kind = 'image' AND bytes > @max"
+    );
+    this.stCountTotal = p('SELECT COUNT(*) AS n FROM items');
+    this.stCountPinned = p('SELECT COUNT(*) AS n FROM items WHERE pinned = 1');
+    this.stCountImages = p("SELECT COUNT(*) AS n FROM items WHERE kind = 'image'");
+    this.stSumBytes = p('SELECT COALESCE(SUM(bytes), 0) AS n FROM items');
+    this.stAllTags = p(
+      'SELECT t.name, COUNT(it.item_id) AS n FROM tags t LEFT JOIN item_tags it ON it.tag_id = t.id GROUP BY t.id ORDER BY n DESC, t.name'
+    );
+    this.stExportItems = p('SELECT * FROM items ORDER BY created_at DESC');
+    this.stAllBlobPaths = p('SELECT blob_path FROM items WHERE blob_path IS NOT NULL');
+    // list() 的动态 SQL 缓存：形态只有「筛选类型 × 是否带搜索词」的固定几种，键空间有界
+    this._listStmts = new Map();
+
+    this._settings = {};
+    this._loadSettings();
   }
 
   // ---------- 设置 ----------
 
   _loadSettings() {
     this._settings = { ...DEFAULT_SETTINGS };
-    for (const row of this.db.prepare('SELECT key, value FROM settings').all()) {
+    for (const row of this.stLoadSettings.all()) {
       try {
         this._settings[row.key] = JSON.parse(row.value);
       } catch {
@@ -121,14 +151,12 @@ class Store {
 
   /** 这个设置项是否被显式设置过（用来区分"从没设过"和"设成了 false"） */
   hasSetting(key) {
-    return !!this.db.prepare('SELECT 1 AS x FROM settings WHERE key = ?').get(key);
+    return !!this.stHasSetting.get(key);
   }
 
   setSetting(key, value) {
     this._settings[key] = value;
-    this.db
-      .prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
-      .run(key, JSON.stringify(value));
+    this.stSetSetting.run(key, JSON.stringify(value));
     return this._settings[key];
   }
 
@@ -140,7 +168,7 @@ class Store {
    * （"刚用过的那条"顶不到最前）。
    */
   _nextStamp() {
-    const max = this.db.prepare('SELECT COALESCE(MAX(created_at), 0) AS m FROM items').get().m;
+    const max = this.stMaxStamp.get().m;
     const now = Date.now();
     return now > max ? now : max + 1;
   }
@@ -268,7 +296,12 @@ class Store {
                  ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
                  ORDER BY pinned DESC, created_at DESC, id DESC
                  LIMIT @limit OFFSET @offset`;
-    const rows = this.db.prepare(sql).all(params);
+    let stmt = this._listStmts.get(sql);
+    if (!stmt) {
+      stmt = this.db.prepare(sql);
+      this._listStmts.set(sql, stmt);
+    }
+    const rows = stmt.all(params);
 
     const tagMap = new Map();
     for (const t of this.stTagsOf.all()) {
@@ -286,12 +319,12 @@ class Store {
   }
 
   stats() {
-    const one = (sql) => this.db.prepare(sql).get();
-    const total = one('SELECT COUNT(*) AS n FROM items').n;
-    const pinned = one('SELECT COUNT(*) AS n FROM items WHERE pinned = 1').n;
-    const images = one("SELECT COUNT(*) AS n FROM items WHERE kind = 'image'").n;
-    const bytes = one('SELECT COALESCE(SUM(bytes), 0) AS n FROM items').n;
-    return { total, pinned, images, bytes };
+    return {
+      total: this.stCountTotal.get().n,
+      pinned: this.stCountPinned.get().n,
+      images: this.stCountImages.get().n,
+      bytes: this.stSumBytes.get().n
+    };
   }
 
   // ---------- 容量治理 ----------
@@ -304,25 +337,9 @@ class Store {
       for (const r of rows) victims.set(r.id, r);
     };
 
-    collect(
-      this.db
-        .prepare(
-          'SELECT id, blob_path FROM items WHERE pinned = 0 ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET @max'
-        )
-        .all({ max: s.maxItems })
-    );
-    collect(
-      this.db
-        .prepare(
-          "SELECT id, blob_path FROM items WHERE pinned = 0 AND kind = 'image' ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET @max"
-        )
-        .all({ max: s.maxImages })
-    );
-    collect(
-      this.db
-        .prepare("SELECT id, blob_path FROM items WHERE pinned = 0 AND kind = 'image' AND bytes > @max")
-        .all({ max: s.maxImageBytes })
-    );
+    collect(this.stOverCount.all({ max: s.maxItems }));
+    collect(this.stOverImages.all({ max: s.maxImages }));
+    collect(this.stBigImages.all({ max: s.maxImageBytes }));
 
     for (const r of victims.values()) this.remove(r.id);
     return victims.size;
@@ -330,12 +347,7 @@ class Store {
 
   /** 清理没有被任何记录引用的图片文件（异常退出后的遗物） */
   pruneOrphanBlobs() {
-    const used = new Set(
-      this.db
-        .prepare('SELECT blob_path FROM items WHERE blob_path IS NOT NULL')
-        .all()
-        .map((r) => r.blob_path)
-    );
+    const used = new Set(this.stAllBlobPaths.all().map((r) => r.blob_path));
     let removed = 0;
     for (const name of fs.readdirSync(this.blobsDir)) {
       if (!used.has(name)) {
@@ -368,17 +380,13 @@ class Store {
   }
 
   allTags() {
-    return this.db
-      .prepare(
-        'SELECT t.name, COUNT(it.item_id) AS n FROM tags t LEFT JOIN item_tags it ON it.tag_id = t.id GROUP BY t.id ORDER BY n DESC, t.name'
-      )
-      .all();
+    return this.stAllTags.all();
   }
 
   // ---------- 备份 ----------
 
   exportData() {
-    const items = this.db.prepare('SELECT * FROM items ORDER BY created_at DESC').all().map((r) => ({
+    const items = this.stExportItems.all().map((r) => ({
       ...this._rowToItem(r),
       hash: r.hash,
       blobPath: r.blob_path
@@ -401,7 +409,9 @@ class Store {
           skipped++;
           continue;
         }
-        this.stInsert.run({
+        // 行号直接取 stInsert 的返回值：不再在导入循环里逐行 prepare + 查询
+        // last_insert_rowid（导入大备份时会瞬时制造 N 个原生语句句柄）
+        const info = this.stInsert.run({
           kind: it.kind || 'text',
           subtype: it.subtype || 'other',
           text: it.text ?? null,
@@ -412,7 +422,7 @@ class Store {
           pinned: it.pinned ? 1 : 0,
           created_at: it.createdAt || Date.now()
         });
-        const id = Number(this.db.prepare('SELECT last_insert_rowid() AS id').get().id);
+        const id = Number(info.lastInsertRowid);
         for (const tag of it.tags || []) this.addTag(id, tag);
         added++;
       }

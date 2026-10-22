@@ -1,7 +1,7 @@
 {
   "name": "paste-manager",
   "productName": "粘贴管理器",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "本地剪贴板历史管理器（Windows / Electron）",
   "author": "local",
